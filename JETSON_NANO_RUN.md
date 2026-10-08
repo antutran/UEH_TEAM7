@@ -41,7 +41,8 @@ Nhờ các alias và biến môi trường đã được cấu hình trong `~/.b
 
 ### Bước 1: SSH vào Jetson Nano
 ```bash
-ssh jetson@172.20.10.7
+ssh jetson@172.20.10.9
+# Hoặc nếu cắm cáp Micro-USB: ssh jetson@192.168.55.1
 ```
 
 ### Bước 2: Kiểm tra trạng thái phần cứng và cảm biến
@@ -62,24 +63,41 @@ car compile
 ```
 *(Lệnh này chạy `colcon build` cho package `crc_sim` trong container)*
 
-### Bước 5: Chạy chương trình chính của Robot
+### Bước 5: Chạy chương trình chính của Robot & Mở quan sát Camera trực tiếp
+
+**Cách 1 (Khuyên dùng - Chạy xe + Bật Web Dashboard quan sát Camera & Pin cùng lúc):**
+```bash
+car start "PYTHONUNBUFFERED=1 ros2 launch crc_sim run_with_viewer.launch.py"
+```
+*(Chương trình tự động chạy ngầm, xe hoạt động và đồng thời phát stream video Web Dashboard).*
+
+**Cách 2 (Chỉ chạy node điều khiển xe, không bật Web Viewer để tiết kiệm tài nguyên tối đa):**
 ```bash
 car start "PYTHONUNBUFFERED=1 ros2 run crc_sim starter"
 ```
-Chương trình sẽ tự động chạy ngầm dưới dạng background daemon (vẫn tiếp tục chạy ngay cả khi ngắt kết nối SSH hoặc gập màn hình máy tính).
 
-### Bước 6: Theo dõi log thực thi
+### Bước 6: Quan sát trực tiếp trên màn hình máy tính / điện thoại
+Mở trình duyệt web (Chrome / Safari) trên máy tính hoặc điện thoại cùng mạng:
+👉 **`http://172.20.10.9:8080/`**  *(hoặc `http://192.168.55.1:8080/` nếu cắm cáp Micro-USB)*
+
+Trên giao diện Web bạn có thể:
+- 📺 **Song song (Dual View):** Xem cả 2 màn hình cùng lúc (Mắt camera xe thật + Phân tích vạch làn xe).
+- 🛣️ **Lane Debug:** Phóng to hình ảnh thuật toán bám làn (Target point, Steering angle, Polyline).
+- 📷 **Mắt Xe (Raw Camera):** Phóng to góc nhìn thực tế 640x480 từ camera IMX219 trên xe.
+- ⚡ **Telemetry thời gian thực:** Hiển thị liên tục phần trăm Pin, điện áp (V), và vận tốc xe ($v, w$).
+
+### Bước 7: Theo dõi log thực thi trên terminal
 ```bash
 car logs
 ```
 *(Nhấn Ctrl+C để thoát xem log, chương trình chính vẫn tiếp tục chạy trên xe).*
 
-### Bước 7: Kiểm tra trạng thái container và topic
+### Bước 8: Kiểm tra trạng thái container và topic
 ```bash
 car status
 ```
 
-### Bước 8: Dừng chương trình an toàn
+### Bước 9: Dừng chương trình an toàn
 ```bash
 car stop
 ```

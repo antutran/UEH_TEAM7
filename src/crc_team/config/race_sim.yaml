@@ -1,0 +1,19 @@
+# crc_team race settings for the Gazebo simulator (Student Pack, TurtleBot3 Waffle).
+# Only the values that differ from the defaults in race_node.py are listed.
+# Where Gazebo really renders the Waffle camera (measured against the true robot pose):
+# 0.104 m above the ground, 0.064 m ahead of the wheel axle, 0.065 m RIGHT of the centre.
+cam_height: 0.104
+cam_x: 0.064
+cam_y: -0.065
+cam_pitch_deg: 0.0       # launch the sim with camera_pitch:=0.3 and set 17.2 here to see closer
+be_x_min: 0.30           # the camera cannot see the ground closer than ~0.26 m
+be_x_max: 1.00
+lane_width: 0.35         # line centre to line centre on the simulator track
+line_width: 0.03
+lidar_x: -0.064          # the Waffle LiDAR sits 64 mm behind the wheel axle
+body_front: 0.15         # on the ramp the LiDAR sees the robot's own front at ~0.13 m
+wait_for_green: false   # the simulator has no START light (only the junction light)
+max_speed: 0.20
+min_speed: 0.08
+lookahead: 0.40
+blind_distance: 2.0      # the simulator ramp is a plain grey plate, 1.4 m without lines

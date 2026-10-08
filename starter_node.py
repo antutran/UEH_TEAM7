@@ -57,10 +57,13 @@ class Starter(Node):
     def __init__(self):
         super().__init__('crc_starter')
 
-        # Thông số vận tốc và an toàn
-        self.declare_parameter('max_speed', 0.14)        # m/s (tốc độ tối đa khi đi thẳng)
-        self.declare_parameter('min_speed', 0.06)        # m/s (tốc độ tối thiểu khi cua gắt)
-        self.declare_parameter('straight_speed', 0.12)   # m/s (tốc độ khi mất vạch đi thẳng)
+        # Thông số vận tốc và an toàn (Adaptive Straight/Corner Speed Control)
+        self.declare_parameter('max_speed', 0.40)        # m/s (giới hạn trần an toàn của động cơ)
+        self.declare_parameter('straight_speed', 0.32)   # m/s (tốc độ bứt phá trên đoạn đường thẳng)
+        self.declare_parameter('corner_speed', 0.11)     # m/s (tốc độ hãm an toàn khi ôm cua)
+        self.declare_parameter('lost_line_speed', 0.12)  # m/s (tốc độ khi tạm mất vạch)
+        self.declare_parameter('accel_rate', 0.50)       # m/s^2 (gia tốc tăng tốc mượt mà trên đường thẳng)
+        self.declare_parameter('decel_rate', 1.20)       # m/s^2 (gia tốc giảm tốc hãm phanh khi vào cua)
         self.declare_parameter('max_turn', 0.9)          # rad/s (giới hạn tốc độ quay)
         self.declare_parameter('stop_distance', 0.28)    # m (khoảng cách phanh an toàn cách cản trước ~8cm)
         self.declare_parameter('rate', 20.0)             # Hz (tần số điều khiển)
@@ -86,12 +89,19 @@ class Starter(Node):
         self.declare_parameter('show_view', has_display)
 
         self.max_speed = float(self.get_parameter('max_speed').value)
-        self.min_speed = float(self.get_parameter('min_speed').value)
         self.straight_speed = float(self.get_parameter('straight_speed').value)
+        self.corner_speed = float(self.get_parameter('corner_speed').value)
+        self.lost_line_speed = float(self.get_parameter('lost_line_speed').value)
+        self.accel_rate = float(self.get_parameter('accel_rate').value)
+        self.decel_rate = float(self.get_parameter('decel_rate').value)
         self.max_turn = float(self.get_parameter('max_turn').value)
         self.stop_distance = float(self.get_parameter('stop_distance').value)
         self.rate = float(self.get_parameter('rate').value)
         self.invert_steering = bool(self.get_parameter('invert_steering').value)
+
+        # Trạng thái điều khiển tốc độ thích nghi (Adaptive Speed State)
+        self.current_speed = self.corner_speed
+        self.speed_mode_text = 'KHOI DONG'
 
         self.target_right_x = float(self.get_parameter('target_right_x').value)
         self.target_near_x = float(self.get_parameter('target_near_x').value)
@@ -197,7 +207,8 @@ class Starter(Node):
 
         self.create_timer(1.0 / self.rate, self.tick)
         self.get_logger().info(
-            f'Anti-Glare Sliding Windows Follower ready | Target X={self.target_right_x}px | Speed={self.max_speed}m/s')
+            f'Adaptive High-Speed Follower ready | Target X={self.target_right_x}px | '
+            f'Straight={self.straight_speed}m/s | Corner={self.corner_speed}m/s | Accel={self.accel_rate}m/s^2')
 
     # --- Sensor Callbacks ---
 
@@ -290,6 +301,7 @@ class Starter(Node):
         self.pub_cmd.publish(msg)
 
     def stop(self):
+        self.current_speed = 0.0
         try:
             self.pub_cmd.publish(Twist())
         except Exception:
@@ -545,14 +557,15 @@ class Starter(Node):
                     self.smooth_right_x = None
                     self.last_valid_steer = 0.0
                     self.prev_error = 0.0
-                    self.d_error_filtered = 0.0
-                    self.drive(self.straight_speed, 0.0)
+                    self.current_speed = self.corner_speed
+                    self.drive(self.corner_speed, 0.0)
                     self.get_logger().info(
                         '[VUOT XE] HOAN TAT VUOT XE! Da tro ve lan phai an toan -> TIEP TUC BAM LANE PHAI.')
 
         # 1. Ưu tiên phanh dừng nếu có vật cản ngoài chuỗi vượt xe
         elif is_blocked:
             self.stop()
+            self.current_speed = self.corner_speed
             self.last_valid_steer = 0.0
             status_text = f'DUNG XE (Vat can {front_obstacle:.2f}m)'
             self.log_every(1.5, f'[CANH BAO] Vat can o {front_obstacle:.2f}m -> PHANH DUNG')
@@ -562,7 +575,7 @@ class Starter(Node):
             elapsed = time.time() - self.post_tunnel_timer_start
             straight_duration = self.post_tunnel_straight_time
             if elapsed < straight_duration:
-                speed = self.straight_speed
+                speed = 0.14
                 steer = 0.0
                 self.last_valid_steer = 0.0
                 status_text = f'QUA HAM: DI THANG ({straight_duration - elapsed:.1f}s)'
@@ -678,18 +691,48 @@ class Starter(Node):
                     steer = filtered_steer
                     self.last_valid_steer = steer
 
-                # 4. Điều chỉnh vận tốc thích nghi (Adaptive Speed)
-                turn_factor = min(1.0, max(abs(raw_error) / 80.0, abs(curvature) * 120.0))
-                speed = self.max_speed - (self.max_speed - self.min_speed) * turn_factor
+                # 4. Điều chỉnh vận tốc thích nghi THÔNG MINH:
+                #    - CHẠY ĐƯỜNG THẲNG: Tự động tăng tốc nhanh dần lên tới straight_speed (0.32 m/s).
+                #    - VÀO CUA: Chủ động hãm phanh giảm tốc về corner_speed (0.11 m/s) để ôm cua an toàn, bám vạch chắc chắn.
+                steer_factor = min(1.0, abs(steer) / 0.38)
+                curv_factor = min(1.0, abs(curvature) * 150.0)
+                err_factor = min(1.0, abs(raw_error) / 55.0)
+                gyro_factor = min(1.0, abs(self.gyro_z) / 0.30)
+
+                # Tổng hợp hệ số uốn cua (0.0 = thẳng tuyệt đối, 1.0 = cua gắt)
+                turn_factor = max(steer_factor, curv_factor, err_factor * 0.70, gyro_factor * 0.75)
+
+                # Tính tốc độ mục tiêu theo đường cong phi tuyến:
+                target_speed = self.corner_speed + (self.straight_speed - self.corner_speed) * ((1.0 - turn_factor) ** 2)
+
+                # Bộ điều tốc Slew-Rate Limiter (Tăng tốc mượt tránh trượt bánh, phanh nhanh kịp ôm cua):
+                dt = 1.0 / self.rate
+                if target_speed > self.current_speed:
+                    acc_step = self.accel_rate * dt
+                    self.current_speed = min(target_speed, self.current_speed + acc_step)
+                    speed_mode = 'THANG: TANG TOC'
+                else:
+                    dec_step = self.decel_rate * dt
+                    self.current_speed = max(target_speed, self.current_speed - dec_step)
+                    speed_mode = 'CUA: GIAM TOC'
+
+                speed = self.current_speed
+                status_text = f'{status_text} [{speed_mode}]'
 
                 # 5. Truyền lệnh qua drive() với chính sách Forward-Only Differential Drive
                 self.drive(speed, steer)
-                self.log_every(2.0, f'{status_text}: err={raw_error:+.1f}px | gyro={self.gyro_z:+.3f}r/s | steer={steer:+.2f} rad/s | v={speed:.2f} m/s')
+                self.log_every(1.5, f'{status_text}: err={raw_error:+.1f}px | steer={steer:+.2f}r/s | v={speed:.2f}m/s | gyro={self.gyro_z:+.3f}r/s')
 
             else:
-                # MẤT MỤC TIÊU -> Duy trì góc lái giảm dần để vào cua mượt mà, tránh mất lái đột ngột
+                # MẤT MỤC TIÊU -> Duy trì góc lái giảm dần để vào cua mượt mà, hãm tốc về mức an toàn lost_line_speed
                 status_text = 'MAT VACH -> GIU LAI & DI THANG'
-                speed = self.straight_speed
+                target_speed = self.lost_line_speed
+                dt = 1.0 / self.rate
+                if target_speed < self.current_speed:
+                    self.current_speed = max(target_speed, self.current_speed - self.decel_rate * dt)
+                else:
+                    self.current_speed = target_speed
+                speed = self.current_speed
                 steer = self.last_valid_steer * 0.70
                 self.last_valid_steer = steer
                 self.prev_error = 0.0
