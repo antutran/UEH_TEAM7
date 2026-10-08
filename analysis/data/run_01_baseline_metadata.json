@@ -1,0 +1,21 @@
+{
+  "run_id": "run_01",
+  "date_time": "2026-09-27T07:25:09",
+  "controller_command": "ros2 run crc_sim starter",
+  "simulator_command": "bash scripts/run_docker.sh up",
+  "start_time_iso": "2026-09-27T07:25:09",
+  "end_time_iso": "2026-09-27T07:32:10",
+  "duration_sec": 420.5,
+  "duration_min": "07:00.50",
+  "cumulative_distance_m": 28.43,
+  "mean_linear_speed_mps": 0.088,
+  "max_linear_speed_mps": 0.1,
+  "mean_abs_angular_speed_rps": 0.045,
+  "max_abs_angular_speed_rps": 0.3,
+  "measurement_method": "Participant-side /odom and /cmd_vel subscriber measurement node",
+  "completion_detection_method": "Odometry-relative loop closure: return to within 0.70 m and 0.70 rad of initial start pose after >= 300.0 s and >= 22.0 m cumulative distance",
+  "completed": true,
+  "timeout": false,
+  "num_samples": 8411,
+  "notes": "Original baseline reference run (full loop completion)"
+}
