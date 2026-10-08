@@ -192,9 +192,7 @@ class Starter(Node):
         self.lane_only_mode = bool(self.get_parameter('lane_only_mode').value)
 
         self.pub_cmd = self.create_publisher(Twist, '/cmd_vel', 10)
-        self.pub_lane_debug = self.create_publisher(Image, '/camera/lane_debug', 10)
-        self.pub_debug_legacy = self.create_publisher(Image, '/lane_debug/image', 10)
-        self.pub_debug_cam = self.create_publisher(Image, '/camera/debug_image', 10)
+        self.pub_lane_debug = self.create_publisher(Image, '/lane_debug/image', 2)
 
         self.create_subscription(Image, '/camera/image_raw',
                                  self.on_image, qos_profile_sensor_data)
@@ -898,13 +896,11 @@ class Starter(Node):
             debug_frame = self.render_debug_frame(
                 self.image, right_x, mask, roi_y, status_text, speed, steer, error_display, feature_type)
 
-            # Phát ra ROS topic /camera/lane_debug và /lane_debug/image (cho Web Viewer)
+            # Phát ra ROS topic /lane_debug/image (cho Web Viewer)
             if self.bridge is not None and debug_frame is not None:
                 try:
                     debug_msg = self.bridge.cv2_to_imgmsg(debug_frame, 'bgr8')
                     self.pub_lane_debug.publish(debug_msg)
-                    self.pub_debug_legacy.publish(debug_msg)
-                    self.pub_debug_cam.publish(debug_msg)
                 except Exception:
                     pass
 
