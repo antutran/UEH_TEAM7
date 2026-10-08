@@ -99,6 +99,12 @@ class Starter(Node):
         self.rate = float(self.get_parameter('rate').value)
         self.invert_steering = bool(self.get_parameter('invert_steering').value)
 
+        # Thông số vượt dốc khi phát hiện biển báo RAMP (images/ramp.png)
+        self.declare_parameter('ramp_boost_speed', 0.40)  # m/s (hết tốc độ khi leo dốc)
+        self.declare_parameter('ramp_boost_sec', 5.0)     # s (giữ xe đi thẳng hết tốc độ trong 5 giây)
+        self.ramp_boost_speed = float(self.get_parameter('ramp_boost_speed').value)
+        self.ramp_boost_sec = float(self.get_parameter('ramp_boost_sec').value)
+
         # Trạng thái điều khiển tốc độ thích nghi (Adaptive Speed State)
         self.current_speed = self.corner_speed
         self.speed_mode_text = 'KHOI DONG'
@@ -123,6 +129,15 @@ class Starter(Node):
         self.d_error_filtered = 0.0
         self.last_valid_steer = 0.0
         self.smooth_right_x = None
+
+        # Logic nhận diện biển báo RAMP (/Users/tuantran/project/UEH_Team7/images/ramp.png)
+        self.ramp_boost_state = 'IDLE'   # 'IDLE' -> 'ACTIVE' -> 'DONE'
+        self.ramp_boost_done = False
+        self.ramp_boost_start_time = 0.0
+        self.ramp_locked_yaw = 0.0
+        self.ramp_detect_count = 0
+        self.last_ramp_box = None
+        self.ramp_template_64 = self._load_ramp_template()
 
         # IMU Gyroscope heading-hold stabilizer
         self.gyro_z = 0.0              # Tốc độ quay Z hiện tại (rad/s) từ IMU
@@ -209,6 +224,92 @@ class Starter(Node):
         self.get_logger().info(
             f'Adaptive High-Speed Follower ready | Target X={self.target_right_x}px | '
             f'Straight={self.straight_speed}m/s | Corner={self.corner_speed}m/s | Accel={self.accel_rate}m/s^2')
+
+    # --- Nhận diện biển báo RAMP (/images/ramp.png) ---
+
+    def _load_ramp_template(self):
+        candidate_paths = [
+            '/Users/tuantran/project/UEH_Team7/images/ramp.png',
+            '/home/jetson/UEH_Team7/images/ramp.png',
+            '/home/jetson/UEH_Team7_V18/src/crc_sim/crc_sim/images/ramp.png',
+            '/ws/src/crc_sim/crc_sim/images/ramp.png',
+            os.path.join(os.path.dirname(__file__), 'images', 'ramp.png'),
+            os.path.join(os.path.dirname(__file__), '..', 'images', 'ramp.png'),
+            'images/ramp.png',
+        ]
+        template = None
+        for p in candidate_paths:
+            if os.path.exists(p):
+                template = cv2.imread(p)
+                if template is not None:
+                    self.get_logger().info(f'[RAMP TEMPLATE] Tải thành công từ: {p}')
+                    break
+
+        if template is None:
+            self.get_logger().warn('Khong tim thay file images/ramp.png!')
+            return None
+
+        # Trích xuất vùng tam giác viền đỏ làm template chuẩn hóa 64x64
+        gray = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
+        _, mask_t = cv2.threshold(gray, 10, 255, cv2.THRESH_BINARY)
+        tx, ty, tw, th = cv2.boundingRect(mask_t)
+        if tw > 10 and th > 10:
+            crop = gray[ty:ty+th, tx:tx+tw]
+        else:
+            crop = gray
+        return cv2.resize(crop, (64, 64))
+
+    def detect_ramp_sign(self, image):
+        """Phát hiện biển báo RAMP hình tam giác viền đỏ bằng HSV + Template Matching."""
+        if (self.ramp_boost_done or self.ramp_boost_state != 'IDLE' or
+                self.ramp_template_64 is None or image is None):
+            return False, 0.0, None
+
+        h, w = image.shape[:2]
+        # ROI: Nửa phải phía trên khung hình nơi biển báo xuất hiện bên lề đường
+        y1, y2 = int(0.04 * h), int(0.70 * h)
+        x1, x2 = int(0.25 * w), w
+        roi = image[y1:y2, x1:x2]
+
+        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+        # Lọc màu đỏ (Hue: 0-12 hoặc 165-180, Sat > 70, Val > 50)
+        m1 = cv2.inRange(hsv, np.array([0, 70, 50]), np.array([12, 255, 255]))
+        m2 = cv2.inRange(hsv, np.array([165, 70, 50]), np.array([180, 255, 255]))
+        mask_red = cv2.bitwise_or(m1, m2)
+
+        # Khử nhiễu đốm nhỏ
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+        mask_red = cv2.morphologyEx(mask_red, cv2.MORPH_CLOSE, kernel)
+
+        cnts, _ = cv2.findContours(mask_red, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        best_score = 0.0
+        best_bbox = None
+
+        for c in cnts:
+            area = cv2.contourArea(c)
+            if area < 100 or area > 35000:
+                continue
+            bx, by, bw, bh = cv2.boundingRect(c)
+            if bw < 16 or bh < 16:
+                continue
+            ratio = float(bw) / float(bh)
+            if ratio < 0.60 or ratio > 1.60:
+                continue
+
+            # Crop vùng ứng viên và đối sánh với template ramp
+            patch = cv2.cvtColor(roi[by:by+bh, bx:bx+bw], cv2.COLOR_BGR2GRAY)
+            patch_64 = cv2.resize(patch, (64, 64))
+            res = cv2.matchTemplate(patch_64, self.ramp_template_64, cv2.TM_CCOEFF_NORMED)
+            score = float(res[0][0])
+
+            if score > best_score:
+                best_score = score
+                best_bbox = (x1 + bx, y1 + by, bw, bh)
+
+        # Ngưỡng xác nhận biển RAMP: score >= 0.38 (các biển khác < 0.10)
+        if best_score >= 0.38:
+            return True, best_score, best_bbox
+        return False, best_score, None
 
     # --- Sensor Callbacks ---
 
@@ -389,9 +490,15 @@ class Starter(Node):
             # Vẽ nền nhỏ
             (tw, th), _ = cv2.getTextSize(batt_text, cv2.FONT_HERSHEY_SIMPLEX, 0.48, 1)
             cv2.rectangle(debug, (w - tw - 14, 6), (w - 6, 6 + th + 8), (20, 24, 33), -1)
-            cv2.rectangle(debug, (w - tw - 14, 6), (w - 6, 6 + th + 8), batt_color, 1)
             cv2.putText(debug, batt_text, (w - tw - 10, 6 + th + 2),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.48, batt_color, 1, cv2.LINE_AA)
+
+        # Vẽ bounding box biển báo RAMP (màu đỏ/vàng nổi bật)
+        if self.last_ramp_box is not None:
+            bx, by, bw, bh = self.last_ramp_box
+            cv2.rectangle(debug, (bx, by), (bx + bw, by + bh), (0, 0, 255), 2)
+            cv2.putText(debug, 'BIEN RAMP', (bx, max(18, by - 6)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1, cv2.LINE_AA)
 
         return debug
 
@@ -457,8 +564,53 @@ class Starter(Node):
                         f'[VUOT XE] Phat hien xe dung phia truoc o {front_obstacle:.2f}m <= {self.overtake_trigger_dist:.2f}m '
                         f'-> KICH HOAT NE XE QUA LAN TRAI!')
 
-        # 0. Ưu tiên cao nhất: Chuỗi động tác VƯỢT XE NÉ XE DỪNG TRÊN CAO TỐC
-        if self.overtake_state not in ('IDLE', 'DONE'):
+        # KIỂM TRA NHẬN DIỆN BIỂN BÁO RAMP (images/ramp.png)
+        if not self.ramp_boost_done and self.ramp_boost_state == 'IDLE':
+            is_ramp, ramp_score, ramp_box = self.detect_ramp_sign(self.image)
+            self.last_ramp_box = ramp_box
+            if is_ramp:
+                self.ramp_detect_count += 1
+                if self.ramp_detect_count >= 2 or ramp_score >= 0.55:
+                    self.ramp_boost_state = 'ACTIVE'
+                    self.ramp_boost_start_time = time.time()
+                    self.ramp_locked_yaw = self.yaw
+                    self.get_logger().info(
+                        f'[BIEN BAO RAMP] PHAT HIEN BIEN BAO LEN DOC (score={ramp_score:.2f}) '
+                        f'-> KHOA HUONG IMU ({math.degrees(self.ramp_locked_yaw):.1f} do) & FULL SPEED {self.ramp_boost_speed:.2f}m/s TRONG {self.ramp_boost_sec:.1f}s!')
+            else:
+                self.ramp_detect_count = max(0, self.ramp_detect_count - 1)
+        elif self.ramp_boost_done:
+            self.last_ramp_box = None
+
+        # 0. ƯU TIÊN VƯỢT DỐC: KHI GẶP BIỂN RAMP -> GIỮ THẲNG THEO IMU VÀ HẾT TỐC ĐỘ TRONG 5 GIÂY
+        if self.ramp_boost_state == 'ACTIVE':
+            elapsed = time.time() - self.ramp_boost_start_time
+            if elapsed < self.ramp_boost_sec:
+                # 1. Đi hết tốc độ trong vòng 5s (ramp_boost_speed = 0.40 m/s)
+                speed = self.ramp_boost_speed
+                self.current_speed = speed
+
+                # 2. Giữ xe đi thẳng tuyệt đối dựa vào IMU (Yaw Lock + Gyro Damping)
+                yaw_err = (self.yaw - self.ramp_locked_yaw + math.pi) % (2.0 * math.pi) - math.pi
+                steer = - 1.5 * yaw_err - 0.25 * self.gyro_z
+                steer = max(-0.35, min(0.35, steer))
+
+                status_text = f'LEO DOC RAMP: FULL SPEED {speed:.2f}m/s | IMU THANG ({self.ramp_boost_sec - elapsed:.1f}s)'
+                self.drive(speed, steer)
+                self.log_every(0.5, f'[LEO DOC RAMP] Full speed v={speed:.2f}m/s, steer={steer:+.2f}r/s, yaw_err={math.degrees(yaw_err):+.1f} deg | con {self.ramp_boost_sec - elapsed:.1f}s')
+
+            else:
+                self.ramp_boost_state = 'DONE'
+                self.ramp_boost_done = True
+                self.smooth_right_x = None
+                self.last_valid_steer = 0.0
+                self.prev_error = 0.0
+                self.d_error_filtered = 0.0
+                self.current_speed = self.corner_speed
+                self.get_logger().info('[LEO DOC RAMP] HOAN TAT 5S VUOT DOC! -> Chuyen ve bam lane binh thuong.')
+
+        # 1. Chuỗi động tác VƯỢT XE NÉ XE DỪNG TRÊN CAO TỐC
+        elif self.overtake_state not in ('IDLE', 'DONE'):
             elapsed = time.time() - self.overtake_timer_start
             v_t = self.overtake_speed_turn
             v_s = self.overtake_speed_straight
