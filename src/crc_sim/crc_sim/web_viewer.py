@@ -28,7 +28,7 @@ from geometry_msgs.msg import Twist
 from cv_bridge import CvBridge
 
 PORT = int(os.environ.get("VIEWER_PORT", 8080))
-TARGET_FPS = float(os.environ.get("VIEWER_FPS", 20.0))
+TARGET_FPS = float(os.environ.get("VIEWER_FPS", 25.0))
 MIN_INTERVAL = 1.0 / max(1.0, TARGET_FPS)
 
 def make_placeholder_frame(title="Dang ket noi...", subtitle="Tin hieu se xuat hien tai day"):
@@ -103,6 +103,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
         return  # Suppress request spam
 
     def do_GET(self):
+        global TARGET_FPS, MIN_INTERVAL
         # 1. Main Dashboard HTML
         if self.path in ('/', '/index.html'):
             self.send_response(200)
@@ -355,10 +356,19 @@ class ViewerHandler(BaseHTTPRequestHandler):
   </div>
 
   <div class="view-controls">
-    <button class="btn active" id="btn-dual" onclick="setView('dual')">🚀 Song Song Ghép 1 Stream (Khuyên Dùng)</button>
-    <button class="btn" id="btn-lane" onclick="setView('lane')">🛣️ Chỉ Xem Làn (Lane Debug)</button>
-    <button class="btn" id="btn-cam" onclick="setView('cam')">📷 Chỉ Xem Mắt Xe (Hardware JPEG)</button>
-    <button class="btn" id="btn-split" onclick="setView('split')">👥 2 Khung Riêng Biệt (Split Cards)</button>
+    <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+      <button class="btn active" id="btn-dual" onclick="setView('dual')">🚀 Song Song Ghép 1 Stream (Khuyên Dùng)</button>
+      <button class="btn" id="btn-lane" onclick="setView('lane')">🛣️ Chỉ Xem Làn (Lane Debug)</button>
+      <button class="btn" id="btn-cam" onclick="setView('cam')">📷 Chỉ Xem Mắt Xe (Hardware JPEG)</button>
+      <button class="btn" id="btn-split" onclick="setView('split')">👥 2 Khung Riêng Biệt (Split Cards)</button>
+    </div>
+    <div style="display: flex; gap: 6px; align-items: center; margin-left: auto; flex-wrap: wrap;">
+      <span style="font-size: 12px; color: #94a3b8; font-weight: 600;">FPS STREAM:</span>
+      <button class="btn btn-fps" id="fps-15" onclick="changeFps(15)">15</button>
+      <button class="btn btn-fps" id="fps-20" onclick="changeFps(20)">20</button>
+      <button class="btn btn-fps active" id="fps-25" onclick="changeFps(25)">25 (Khuyên Dùng)</button>
+      <button class="btn btn-fps" id="fps-30" onclick="changeFps(30)">30 (Max)</button>
+    </div>
   </div>
 
   <div class="stream-container">
@@ -518,6 +528,17 @@ class ViewerHandler(BaseHTTPRequestHandler):
       }} catch (e) {{}}
     }}
 
+    async function changeFps(target) {{
+      try {{
+        const res = await fetch('/api/set_fps?fps=' + target);
+        if (res.ok) {{
+          document.querySelectorAll('.btn-fps').forEach(b => b.classList.remove('active'));
+          const btn = document.getElementById('fps-' + target);
+          if (btn) btn.classList.add('active');
+        }}
+      }} catch (e) {{}}
+    }}
+
     setInterval(updateTelemetry, 800);
     updateTelemetry();
   </script>
@@ -526,7 +547,26 @@ class ViewerHandler(BaseHTTPRequestHandler):
 """
             self.wfile.write(html.encode('utf-8'))
 
-        # 2. Telemetry JSON API
+        # 2. Telemetry Set FPS API
+        elif self.path.startswith('/api/set_fps'):
+            try:
+                import urllib.parse
+                parsed = urllib.parse.urlparse(self.path)
+                params = urllib.parse.parse_qs(parsed.query)
+                new_fps = float(params.get('fps', [25.0])[0])
+                TARGET_FPS = max(5.0, min(30.0, new_fps))
+                MIN_INTERVAL = 1.0 / TARGET_FPS
+                with state_lock:
+                    stream_data['telemetry']['target_fps'] = TARGET_FPS
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({'status': 'ok', 'fps': TARGET_FPS}).encode('utf-8'))
+            except Exception:
+                self.send_response(500)
+                self.end_headers()
+
+        # 3. Telemetry JSON API
         elif self.path == '/api/status':
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
