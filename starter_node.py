@@ -32,7 +32,7 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image, Imu, LaserScan
-from std_msgs.msg import Float32
+from std_msgs.msg import Float32, String
 
 try:
     from cv_bridge import CvBridge
@@ -193,6 +193,11 @@ class Starter(Node):
 
         self.pub_cmd = self.create_publisher(Twist, '/cmd_vel', 10)
         self.pub_lane_debug = self.create_publisher(Image, '/lane_debug/image', 2)
+
+        # Chế độ chạy: STOPPED (Mặc định đứng yên an toàn), AUTO (Tự hành bám vạch), MANUAL (Lái bàn phím)
+        self.robot_mode = 'STOPPED'
+        self.sub_control_mode = self.create_subscription(
+            String, '/team_control/mode', self.on_control_mode, 10)
 
         self.create_subscription(Image, '/camera/image_raw',
                                  self.on_image, qos_profile_sensor_data)
@@ -382,7 +387,26 @@ class Starter(Node):
         valid_ranges.sort()
         return valid_ranges[2]
 
+    def on_control_mode(self, msg):
+        mode = msg.data.strip().upper()
+        if mode in ('AUTO', 'RUN', 'START'):
+            if self.robot_mode != 'AUTO':
+                self.robot_mode = 'AUTO'
+                self.get_logger().info('>>> [ROBOT ARMED] KICH HOAT TU HANH: Bat dau lan banh theo lan! <<<')
+        elif mode in ('STOP', 'STOPPED'):
+            self.robot_mode = 'STOPPED'
+            self.stop()
+            self.get_logger().info('>>> [ROBOT DISARMED] PHANH DUNG: Banh xe dung han! <<<')
+        elif mode in ('MANUAL',):
+            self.robot_mode = 'MANUAL'
+            self.stop()
+            self.get_logger().info('>>> [MANUAL MODE] CHE DO LAI THU CONG: Nhan lenh tu ban phim web! <<<')
+
     def drive(self, v, w):
+        # Kiểm tra an toàn: CHỈ quay bánh xe khi ở chế độ AUTO (Đã bấm nút RUN trên Web)
+        if self.robot_mode != 'AUTO':
+            return
+
         # Đảo chiều góc lái nếu phần cứng Yahboom bị đấu ngược kênh motor trái/phải
         w_cmd = -w if self.invert_steering else w
 
