@@ -52,9 +52,11 @@ class LaneDetector:
         # Kernel Top-Hat hình chữ nhật ngang lọc triệt để chói loang rộng
         self.kernel_tophat = cv2.getStructuringElement(cv2.MORPH_RECT, (25, 5))
 
-        # Bộ nhớ theo dõi liên tục vạch phải (Temporal Memory)
+        # Bộ nhớ theo dõi liên tục vạch phải (Temporal Memory & Anti-Jump Lock)
         self.last_right_poly: Optional[np.ndarray] = None
         self.last_curvature: float = 0.0
+        self.glare_reject_count: int = 0
+        self.lost_hold_count: int = 0
 
     def create_anti_glare_mask(self, image: np.ndarray) -> np.ndarray:
         """Tạo mask nhị phân miễn nhiễm chói đèn trần và bóng lóa bạt."""
@@ -82,6 +84,20 @@ class LaneDetector:
         clean_mask[:, :20] = 0
         clean_mask[:, w - 20:] = 0
 
+        # Cắt bỏ vùng bên ngoài và làn đối diện cực trái (x < 120 - 150px)
+        # Hành lang vạch phải (Right Driving Corridor):
+        # Tại y=260 (y_cut): x >= 120px (giữ trọn vạch khi vào cua gắt, loại bỏ vạch làn đối diện x < 120)
+        # Tại y=480 (đáy ảnh): x >= 150px
+        corridor = np.zeros_like(clean_mask)
+        poly_corridor = np.array([
+            [120, y_cut],
+            [w - 10, y_cut],
+            [w - 10, h],
+            [150, h]
+        ], dtype=np.int32)
+        cv2.fillPoly(corridor, [poly_corridor], 255)
+        clean_mask = cv2.bitwise_and(clean_mask, corridor)
+
         # 5. Phân biệt vạch chính vs mép sàn ngoài bằng độ dày bề ngang (Thickness / Width):
         # Mép ngoài sàn/bạt chỉ là đường viền mỏng (thickness <= 10px).
         # Vạch làn chính thi đấu có bề ngang to dày vượt trội (thickness >= 15px - 40px).
@@ -90,7 +106,7 @@ class LaneDetector:
             contours_info = []
             for c in cnts:
                 area = cv2.contourArea(c)
-                if area >= 120:
+                if area >= 100:
                     rect = cv2.minAreaRect(c)
                     length = max(rect[1])
                     thickness = min(rect[1])
@@ -99,10 +115,10 @@ class LaneDetector:
 
             if contours_info:
                 max_thickness = max(info[2] for info in contours_info)
-                # Nếu phát hiện vạch dày chuẩn làn thi đấu (>= 14px):
-                if max_thickness >= 14.0:
+                # Nếu phát hiện vạch dày chuẩn làn thi đấu (>= 12px):
+                if max_thickness >= 12.0:
                     thick_mask = np.zeros_like(clean_mask)
-                    min_allowed = max(11.0, 0.40 * max_thickness)
+                    min_allowed = max(9.0, 0.35 * max_thickness)
                     for c, area, thickness, length in contours_info:
                         if thickness >= min_allowed:
                             cv2.drawContours(thick_mask, [c], -1, 255, -1)
@@ -133,13 +149,23 @@ class LaneDetector:
 
             cand_x: Optional[float] = None
 
-            # Chỉ tìm kiếm ở nửa bên phải (x >= 260px) để loại bỏ 100% vạch tim đường
+            # Khóa bám vạch phải (Anti-Jump Lock):
+            # Khởi đầu cửa sổ quét đáy dựa trên vị trí vạch của frame trước (hỗ trợ cả đường cua sang trái x >= 140px)
             if prev_x is None:
-                x_start = 280
-                x_end = w - 20
+                if self.last_right_poly is not None:
+                    exp_base = self.eval_poly(self.last_right_poly, y_mid)
+                    if exp_base is not None and 160 <= exp_base <= w - 15:
+                        x_start = max(140, int(exp_base - 70))
+                        x_end = min(w - 15, int(exp_base + 70))
+                    else:
+                        x_start = 180
+                        x_end = w - 15
+                else:
+                    x_start = 180
+                    x_end = w - 15
             else:
-                x_start = max(220, int(prev_x - 65))
-                x_end = min(w - 20, int(prev_x + 65))
+                x_start = max(120, int(prev_x - 70))
+                x_end = min(w - 15, int(prev_x + 70))
 
             if x_end > x_start:
                 slice_data = mask[y_top:y_bot, x_start:x_end]
@@ -193,7 +219,7 @@ class LaneDetector:
             except Exception:
                 poly = None
         else:
-            poly = self.last_right_poly
+            poly = None
 
         if poly is not None:
             y_chk = float(h * self.look_y_ratio)
@@ -201,8 +227,34 @@ class LaneDetector:
             last_poly = self.last_right_poly
             if last_poly is not None and x_chk is not None:
                 x_old = self.eval_poly(last_poly, y_chk)
-                if x_old is not None and abs(x_chk - x_old) < 60.0:
-                    poly = 0.80 * poly + 0.20 * last_poly
+                if x_old is not None:
+                    jump = abs(x_chk - x_old)
+                    if jump > 75.0:
+                        # CHẶN ĐỨNG NHẢY LÀN / NHẢY CHÓI:
+                        # Không chấp nhận nhảy đột ngột sang vệt chói/lane khác!
+                        self.glare_reject_count += 1
+                        if self.glare_reject_count <= 8:  # Giữ nguyên vạch cũ tối đa ~0.3s
+                            poly = last_poly
+                        else:
+                            # Sau 8 frame liên tục lệch (cua gắt thực sự), chuyển dịch từ từ
+                            poly = 0.50 * poly + 0.50 * last_poly
+                            self.glare_reject_count = 0
+                    else:
+                        self.glare_reject_count = 0
+                        poly = 0.80 * poly + 0.20 * last_poly
+            else:
+                self.glare_reject_count = 0
+            self.lost_hold_count = 0
+        else:
+            # Nếu mất vạch tạm thời (bị bóng đèn/đoạn đứt): Giữ lại poly frame trước tối đa 8 frame
+            if self.last_right_poly is not None:
+                self.lost_hold_count += 1
+                if self.lost_hold_count <= 8:
+                    poly = self.last_right_poly
+                else:
+                    poly = None
+            else:
+                self.lost_hold_count = 0
 
         return poly, pts
 
@@ -226,7 +278,7 @@ class LaneDetector:
     def process_frame(
         self,
         image: np.ndarray,
-        target_right_x: float = 527.0,
+        target_right_x: float = 510.0,
     ) -> Tuple[Optional[float], Optional[float], float, np.ndarray, np.ndarray, str, Optional[float], Optional[float]]:
         """Quy trình nhận diện hoàn chỉnh DUY NHẤT VẠCH PHẢI:
 

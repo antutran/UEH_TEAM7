@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>crc_yolo</name>
+  <version>1.0.0</version>
+  <description>
+    UEH CRC 2026 sign detector: runs a YOLO (v5 or v8/v11) TensorRT engine on the Jetson GPU
+    and publishes vision_msgs/Detection2DArray on /signs. TensorRT and CUDA are loaded from the
+    host at run time (dlopen), so the image needs no CUDA toolkit.
+  </description>
+  <maintainer email="crc@ueh.edu.vn">UEH CRC 2026 Organising Committee</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>rclcpp</depend>
+  <depend>sensor_msgs</depend>
+  <depend>vision_msgs</depend>
+  <depend>libopencv-dev</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>crc_team</name>
+  <version>1.0.0</version>
+  <description>UEH CRC 2026 team starter: lane following, traffic light, signs and obstacles.
+    Runs unchanged in the Gazebo simulator and on the car.</description>
+  <maintainer email="crc@ueh.edu.vn">UEH CRC 2026 Organising Committee</maintainer>
+  <license>Apache-2.0</license>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>vision_msgs</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-opencv</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

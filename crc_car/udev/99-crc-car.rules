@@ -1,0 +1,9 @@
+# UEH CRC 2026 car: fixed device names, independent of plug-in order.
+# Install with: sudo bash scripts/install_udev.sh
+# ID_MM_DEVICE_IGNORE keeps ModemManager from probing the serial ports.
+
+# Yahboom ROS Robot Control Board V3.0 (CH340 USB-serial, 1a86:7523) -> /dev/myserial
+KERNEL=="ttyUSB*", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", MODE:="0666", SYMLINK+="myserial", ENV{ID_MM_DEVICE_IGNORE}="1"
+
+# Slamtec RPLIDAR C1 (CP210x USB-serial, 10c4:ea60) -> /dev/rplidar
+KERNEL=="ttyUSB*", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", MODE:="0666", SYMLINK+="rplidar", ENV{ID_MM_DEVICE_IGNORE}="1"

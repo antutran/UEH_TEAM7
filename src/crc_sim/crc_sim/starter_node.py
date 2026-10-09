@@ -32,7 +32,7 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image, Imu, LaserScan
-from std_msgs.msg import Float32
+from std_msgs.msg import Float32, String
 
 try:
     from cv_bridge import CvBridge
@@ -58,27 +58,27 @@ class Starter(Node):
         super().__init__('crc_starter')
 
         # Thông số vận tốc và an toàn (Adaptive Straight/Corner Speed Control)
-        self.declare_parameter('max_speed', 0.40)        # m/s (giới hạn trần an toàn của động cơ)
-        self.declare_parameter('straight_speed', 0.32)   # m/s (tốc độ bứt phá trên đoạn đường thẳng)
-        self.declare_parameter('corner_speed', 0.11)     # m/s (tốc độ hãm an toàn khi ôm cua)
-        self.declare_parameter('lost_line_speed', 0.12)  # m/s (tốc độ khi tạm mất vạch)
-        self.declare_parameter('accel_rate', 0.50)       # m/s^2 (gia tốc tăng tốc mượt mà trên đường thẳng)
-        self.declare_parameter('decel_rate', 1.20)       # m/s^2 (gia tốc giảm tốc hãm phanh khi vào cua)
-        self.declare_parameter('max_turn', 0.9)          # rad/s (giới hạn tốc độ quay)
+        self.declare_parameter('max_speed', 0.42)        # m/s (giới hạn trần an toàn của động cơ - hạ xuống 0.42)
+        self.declare_parameter('straight_speed', 0.38)   # m/s (tốc độ bứt phá đường thẳng - hạ xuống 0.38 m/s để xe êm ái, không bị lao)
+        self.declare_parameter('corner_speed', 0.18)     # m/s (tốc độ ôm cua - hạ xuống 0.18 m/s bám chắc vạch)
+        self.declare_parameter('lost_line_speed', 0.16)  # m/s (tốc độ khi tạm mất vạch)
+        self.declare_parameter('accel_rate', 0.45)       # m/s^2 (gia tốc đạp ga mượt mà, không bị chồm xe giật mình)
+        self.declare_parameter('decel_rate', 1.10)       # m/s^2 (gia tốc phanh êm ái, chống chúi đầu giật cục)
+        self.declare_parameter('max_turn', 1.0)          # rad/s (giới hạn tốc độ quay)
         self.declare_parameter('stop_distance', 0.28)    # m (khoảng cách phanh an toàn cách cản trước ~8cm)
         self.declare_parameter('rate', 20.0)             # Hz (tần số điều khiển)
 
         # Thông số bám DUY NHẤT VẠCH PHẢI (Căn xe chạy chuẩn giữa làn)
-        self.declare_parameter('target_right_x', 527.0)  # pixel (vị trí vạch phải tại look_y=355px khi xe ở giữa làn)
-        self.declare_parameter('target_near_x', 580.0)   # pixel (mốc gần tại near_y=403px khống chế xe song song vạch)
+        self.declare_parameter('target_right_x', 600.0)  # pixel (vị trí vạch phải chuẩn theo căn chỉnh của người dùng)
+        self.declare_parameter('target_near_x', 550.0)   # pixel (mốc gần tại near_y=403px khống chế xe song song vạch)
         self.declare_parameter('k_heading', 0.0)         # Triệt tiêu sai số góc ảo, tập trung đi thẳng tuyệt đối
-        self.declare_parameter('look_y_ratio', 0.74)     # Hạ thấp điểm ERR xuống 74% chiều cao ảnh (gần xe hơn)
-        self.declare_parameter('right_search_min', 300)  # Chỉ quét x >= 300px (loại bỏ 100% vạch tim đường và làn ngược chiều)
+        self.declare_parameter('look_y_ratio', 0.74)     # Giữ nguyên mức quét nhìn quen thuộc
+        self.declare_parameter('right_search_min', 360)  # Chỉ quét x >= 360px (loại bỏ hoàn toàn vùng giữa, vạch tim đường và bạt chói)
         self.declare_parameter('right_search_max', 638)  # Đến sát mép phải ảnh
-        self.declare_parameter('kp', 0.0030)             # Hệ số tỉ lệ P (bám thẳng giữa làn)
+        self.declare_parameter('kp', 0.0035)             # Hệ số tỉ lệ P (êm ái, bám chắc, không bị vẩy lái giật cục)
         self.declare_parameter('kd', 0.0008)             # Hệ số vi phân D
-        self.declare_parameter('deadzone', 12.0)         # pixel (vùng chết 12px: xe đi thẳng tuyệt đối, 2 bánh đồng tốc)
-        self.declare_parameter('max_steer_step', 0.07)   # rad/s mỗi chu kỳ (giới hạn gia tốc bẻ lái)
+        self.declare_parameter('deadzone', 10.0)         # pixel (vùng chết 10px: xe đi thẳng tuyệt đối, 2 bánh đồng tốc)
+        self.declare_parameter('max_steer_step', 0.06)   # rad/s mỗi chu kỳ (giới hạn gia tốc bẻ lái)
         self.declare_parameter('roi_top', 0.54)          # Quét từ 54% chiều cao ảnh
         self.declare_parameter('roi_bottom', 0.88)       # Quét đến 88% chiều cao ảnh
         # Đảo chiều lệnh bẻ lái (Mặc định False: chuẩn theo driver xe)
@@ -100,13 +100,14 @@ class Starter(Node):
         self.invert_steering = bool(self.get_parameter('invert_steering').value)
 
         # Thông số vượt dốc khi phát hiện biển báo RAMP (images/ramp.png)
-        self.declare_parameter('ramp_boost_speed', 0.40)  # m/s (hết tốc độ khi leo dốc)
+        self.declare_parameter('ramp_boost_speed', 0.42)  # m/s (hết tốc độ khi leo dốc)
         self.declare_parameter('ramp_boost_sec', 5.0)     # s (giữ xe đi thẳng hết tốc độ trong 5 giây)
         self.ramp_boost_speed = float(self.get_parameter('ramp_boost_speed').value)
         self.ramp_boost_sec = float(self.get_parameter('ramp_boost_sec').value)
 
         # Trạng thái điều khiển tốc độ thích nghi (Adaptive Speed State)
-        self.current_speed = self.corner_speed
+        self.current_speed = 0.0
+        self.start_launch_time = 0.0
         self.speed_mode_text = 'KHOI DONG'
 
         self.target_right_x = float(self.get_parameter('target_right_x').value)
@@ -125,7 +126,7 @@ class Starter(Node):
         self.show_view = bool(self.get_parameter('show_view').value)
 
         # Biến trạng thái điều khiển & bộ lọc
-        self.prev_error = 0.0
+        self.prev_error = None
         self.d_error_filtered = 0.0
         self.last_valid_steer = 0.0
         self.smooth_right_x = None
@@ -150,6 +151,16 @@ class Starter(Node):
         # Cảm biến pin (voltage topic)
         self.battery_voltage = None    # V (None = chưa nhận)
 
+        # --- Thuật toán Xác thực Cua theo Thời gian (Temporal Corner Persistence Verification) ---
+        # Chống 100% hiện tượng nhận nhầm điểm ngoài thành cua, giật phanh hoặc giật lái 1 frame
+        self.corner_candidate_count = 0     # Số frame liên tiếp phát hiện tín hiệu cua
+        self.straight_candidate_count = 0   # Số frame liên tiếp xác nhận đường thẳng
+        self.is_corner_confirmed = False     # Trạng thái cua đã xác thực (True = đang ôm cua thật, False = thẳng)
+        self.smooth_curvature = 0.0          # Độ cong lọc mượt bậc 1 (IIR Low-pass)
+        self.smooth_turn_factor = 0.0        # Hệ số cua làm mượt
+        self.corner_confirm_frames = 5       # Cần duy trì tín hiệu cua >= 5 frame (~0.25s) mới xác nhận vào cua
+        self.straight_confirm_frames = 4     # Cần duy trì >= 4 frame (~0.20s) mới xác nhận hết cua về thẳng
+
         # Logic rẽ sau hầm (khi đường line cam bị kéo lệch hết sang phải, thực hiện 1 lần duy nhất)
         self.post_tunnel_state = 'IDLE'       # 'IDLE' -> 'STRAIGHT' -> 'TURN_RIGHT' -> 'DONE'
         self.post_tunnel_maneuver_done = False
@@ -158,7 +169,7 @@ class Starter(Node):
         self.post_tunnel_turn_start_yaw = 0.0
         self.post_tunnel_straight_time = 3.0     # Thời gian đi thẳng (giây)
         self.post_tunnel_turn_target_deg = 58.0  # Góc cua phải (độ)
-        self.post_tunnel_trigger_x = 590.0       # Ngưỡng chạm x bên phải (px) - càng nhỏ càng kích hoạt sớm/sát hơn
+        self.post_tunnel_trigger_x = 625.0       # Ngưỡng chạm x bên phải (px) - an toàn theo target 600.0
 
         # Logic vượt xe né xe dừng trên cao tốc (parked_robot màu xanh, thực hiện 1 lần duy nhất)
         self.overtake_state = 'IDLE'             # 'IDLE' -> 'OVERTAKE_STEER_LEFT' -> 'OVERTAKE_DIAG_LEFT' -> 'OVERTAKE_STRAIGHTEN_LEFT' -> 'OVERTAKE_FOLLOW_LEFT' -> 'OVERTAKE_STEER_RIGHT' -> 'OVERTAKE_DIAG_RIGHT' -> 'OVERTAKE_STRAIGHTEN_RIGHT' -> 'DONE'
@@ -218,10 +229,66 @@ class Starter(Node):
         self.last_detector_debug = None
         self.last_curvature = 0.0
 
+        # Trạng thái chờ lệnh xuất phát từ Web (START / STOP / MANUAL)
+        self.declare_parameter('auto_start', False)      # Mặc định False: Xe ở chế độ STANDBY chờ bấm START trên Web
+        self.is_running = bool(self.get_parameter('auto_start').value)
+        self.control_mode = 'AUTO'                       # 'AUTO' hoặc 'MANUAL'
+
+        self.pub_car_status = self.create_publisher(String, '/car_status', 10)
+        self.create_subscription(String, '/car_cmd', self.on_car_cmd, 10)
+
         self.create_timer(1.0 / self.rate, self.tick)
+        mode_str = "RUNNING (Tu dong chay)" if self.is_running else "STANDBY (Cho bam START tren Web)"
         self.get_logger().info(
-            f'Adaptive High-Speed Follower ready | Target X={self.target_right_x}px | '
+            f'Adaptive High-Speed Follower ready [{mode_str}] | Target X={self.target_right_x}px | '
             f'Straight={self.straight_speed}m/s | Corner={self.corner_speed}m/s | Accel={self.accel_rate}m/s^2')
+
+    def on_car_cmd(self, msg):
+        cmd = msg.data.strip().lower()
+        if cmd in ('start', 'run', 'go'):
+            self.control_mode = 'AUTO'
+            self.is_running = True
+            self.smooth_right_x = None
+            self.last_valid_steer = 0.0
+            self.prev_error = None
+            self.d_error_filtered = 0.0
+            self.current_speed = 0.0
+            self.start_launch_time = time.time()
+            self.get_logger().info('🚀 [LENH WEB] XUAT PHAT (START)! Khoi hanh em ai (Soft-Launch)...')
+            self.publish_car_status()
+        elif cmd in ('stop', 'pause', 'halt'):
+            self.control_mode = 'AUTO'
+            self.is_running = False
+            self.stop()
+            self.smooth_right_x = None
+            self.last_valid_steer = 0.0
+            self.prev_error = None
+            self.d_error_filtered = 0.0
+            self.current_speed = 0.0
+            self.get_logger().info('🛑 [LENH WEB] DUNG XE (STOP)! Chuyen sang trang thai STANDBY.')
+            self.publish_car_status()
+        elif cmd in ('manual', 'teleop', 'calib'):
+            self.control_mode = 'MANUAL'
+            self.is_running = False
+            self.stop()
+            self.smooth_right_x = None
+            self.last_valid_steer = 0.0
+            self.prev_error = None
+            self.d_error_filtered = 0.0
+            self.current_speed = 0.0
+            self.get_logger().info('🎮 [LENH WEB] CHE DO THU CONG (MANUAL CALIB)! Nhuong quyen /cmd_vel.')
+            self.publish_car_status()
+
+    def publish_car_status(self):
+        try:
+            msg = String()
+            if getattr(self, 'control_mode', 'AUTO') == 'MANUAL':
+                msg.data = 'MANUAL'
+            else:
+                msg.data = 'RUNNING' if self.is_running else 'STANDBY'
+            self.pub_car_status.publish(msg)
+        except Exception:
+            pass
 
     # --- Nhận diện biển báo RAMP (/images/ramp.png) ---
 
@@ -389,7 +456,7 @@ class Starter(Node):
         # Forward-Only Differential Drive Policy:
         # Half-track = 0.1475m. Elevate forward velocity so inner wheel never rotates backward.
         wheel_half_track = 0.1475
-        min_inner_forward = 0.025
+        min_inner_forward = 0.020
         if v > 0.0:
             min_v_needed = min_inner_forward + abs(w_cmd) * wheel_half_track
             v = max(v, min_v_needed)
@@ -435,10 +502,17 @@ class Starter(Node):
         self.last_curvature = curvature
 
         if lookahead_x is not None:
-            if self.smooth_right_x is None or abs(lookahead_x - self.smooth_right_x) > 80.0:
+            if self.smooth_right_x is None:
                 self.smooth_right_x = lookahead_x
             else:
-                self.smooth_right_x = 0.70 * lookahead_x + 0.30 * self.smooth_right_x
+                diff = lookahead_x - self.smooth_right_x
+                # Bộ lọc chống giật tức thời (Anti-Spike Rate Limiter):
+                # Nếu camera nhảy vọt > 28px trong khi xe đang đi thẳng (|gyro_z| < 0.12 rad/s)
+                # -> Đây là nhiễu / điểm lạ bên ngoài, giữ nguyên giá trị đã lọc!
+                if abs(diff) > 28.0 and abs(self.gyro_z) < 0.12:
+                    pass
+                else:
+                    self.smooth_right_x = 0.70 * lookahead_x + 0.30 * self.smooth_right_x
             filtered_lookahead = self.smooth_right_x
         else:
             self.smooth_right_x = None
@@ -505,23 +579,80 @@ class Starter(Node):
     # ------------------------------------------------------------------------
 
     def control(self):
-        # 1. Kiểm tra an toàn bằng LiDAR phía trước (góc 18 độ tránh chạm thành hầm)
-        front_obstacle = self.range_at(0, width_deg=18.0)
-        is_blocked = front_obstacle < self.stop_distance
-
-        # Xác nhận đã ra khỏi hầm: Xe bắt buộc phải lên nửa trên sa bàn (y >= 1.20m).
-        # Toàn bộ khu vực trước hầm và trong hầm luôn có y <= 0.0m (cửa ra hầm tại y = 0.0m).
-        if self.y >= 1.20:
-            self.has_passed_tunnel = True
-
-        # 2. Xử lý ảnh: BÁM VẠCH PHẢI / BÁM RÌA DỐC CẦU / BÁM VẠCH TRÁI
+        # 1. Chờ camera
         if self.image is None:
             self.stop()
             self.log_every(2.0, '[CAMERA WAIT] Dang cho /camera/image_raw (self.image is None)...')
             return
 
+        # 2. LUÔN LUÔN XỬ LÝ ẢNH & DÒ LANE LIÊN TỤC (hiển thị trực quan ngay cả khi chưa bấm START hoặc chạy MANUAL)
         target_lane_x, lookahead_x, curvature, mask, roi_y, tracking_mode, r_near, r_look = self.detect_lines(self.image)
         right_x = r_look
+        self.publish_car_status()
+
+        raw_err = (lookahead_x - self.target_right_x) if lookahead_x is not None else 0.0
+
+        # A. CHẾ ĐỘ THỦ CÔNG (MANUAL CALIB TỪ WEB):
+        # Dò lane & hiển thị trực quan liên tục, NHƯNG hoàn toàn không phát lệnh động cơ từ starter_node
+        if getattr(self, 'control_mode', 'AUTO') == 'MANUAL':
+            status_text = f'MANUAL: BAN PHIM LAI | DANG DO VACH (err={raw_err:+.1f}px)'
+            debug_frame = self.render_debug_frame(
+                self.image, right_x, mask, roi_y, status_text, 0.0, 0.0, raw_err, tracking_mode)
+            if debug_frame is not None:
+                cv2.rectangle(debug_frame, (10, 8), (630, 42), (110, 30, 140), -1)
+                cv2.rectangle(debug_frame, (10, 8), (630, 42), (210, 100, 255), 2)
+                cv2.putText(debug_frame, "CHE DO MANUAL: BAN PHIM LAI (LANE DETECT ACTIVE)",
+                            (20, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.46, (255, 255, 255), 2, cv2.LINE_AA)
+                cv2.putText(debug_frame, f"Nhuong quyen /cmd_vel cho ban phim Web | Dang do vach: err={raw_err:+.1f}px",
+                            (20, 37), cv2.FONT_HERSHEY_SIMPLEX, 0.36, (230, 210, 255), 1, cv2.LINE_AA)
+                if self.bridge is not None:
+                    try:
+                        self.pub_lane_debug.publish(self.bridge.cv2_to_imgmsg(debug_frame, 'bgr8'))
+                    except Exception:
+                        pass
+                if self.show_view:
+                    try:
+                        cv2.imshow('UEH CRC 2026 - Camera Do Lan (Lane Tracking)', debug_frame)
+                        cv2.waitKey(1)
+                    except Exception:
+                        pass
+            return
+
+        # B. CHẾ ĐỘ CHỜ (STANDBY - CHƯA BẤM START):
+        # Camera luôn hiển thị đầy đủ hình ảnh dò vạch (mask, crosshair, HUD),
+        # NHƯNG KHÔNG PHÁT LỆNH ĐỘNG CƠ (Bánh xe đứng yên 100% chờ bấm START)
+        if not self.is_running:
+            status_text = f'STANDBY: CHO BAM [START] | err={raw_err:+.1f}px | muc tieu={int(self.target_right_x)}px'
+            debug_frame = self.render_debug_frame(
+                self.image, right_x, mask, roi_y, status_text, 0.0, 0.0, raw_err, tracking_mode)
+            if debug_frame is not None:
+                cv2.rectangle(debug_frame, (10, 8), (630, 42), (20, 100, 220), -1)
+                cv2.rectangle(debug_frame, (10, 8), (630, 42), (50, 180, 255), 2)
+                cv2.putText(debug_frame, "STANDBY: BAM [START] TREN WEB DE CHAY",
+                            (20, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (255, 255, 255), 2, cv2.LINE_AA)
+                cv2.putText(debug_frame, f"Camera dang do vach: err={raw_err:+.1f}px | Banh xe dung yen cho START",
+                            (20, 37), cv2.FONT_HERSHEY_SIMPLEX, 0.36, (210, 240, 255), 1, cv2.LINE_AA)
+                if self.bridge is not None:
+                    try:
+                        self.pub_lane_debug.publish(self.bridge.cv2_to_imgmsg(debug_frame, 'bgr8'))
+                    except Exception:
+                        pass
+                if self.show_view:
+                    try:
+                        cv2.imshow('UEH CRC 2026 - Camera Do Lan (Lane Tracking)', debug_frame)
+                        cv2.waitKey(1)
+                    except Exception:
+                        pass
+            return
+
+        # C. KHI ĐÃ BẤM START (is_running == True): BÁNH XE QUAY VÀ CHẠY TỰ ĐỘNG BÁM LANE
+        # 3. Kiểm tra an toàn bằng LiDAR phía trước (góc 18 độ tránh chạm thành hầm)
+        front_obstacle = self.range_at(0, width_deg=18.0)
+        is_blocked = front_obstacle < self.stop_distance
+
+        # Xác nhận đã ra khỏi hầm: Xe bắt buộc phải lên nửa trên sa bàn (y >= 1.20m).
+        if self.y >= 1.20:
+            self.has_passed_tunnel = True
 
         speed = 0.0
         steer = 0.0
@@ -542,7 +673,7 @@ class Starter(Node):
 
                 if line_pulled_extreme:
                     self.post_tunnel_trigger_count += 1
-                    if self.post_tunnel_trigger_count >= 2:  # Đạt 2 frame (~0.1s) là kích hoạt ngay
+                    if self.post_tunnel_trigger_count >= 5:  # Nâng lên 5 frame (~0.25s) để chống nhiễu giả
                         self.post_tunnel_state = 'STRAIGHT'
                         self.post_tunnel_timer_start = time.time()
                         self.get_logger().info(
@@ -775,19 +906,18 @@ class Starter(Node):
         # 4. Chế độ bám lane bình thường (Pure Right-Lane Follower + IMU Gyro Stabilizer)
         else:
             if lookahead_x is not None:
-                # --- IMU Camera Spike Rejection ---
-                # Nếu camera nhảy vọt đột ngột (>40px so với frame trước) nhưng gyro nói xe đang thẳng
-                # (|gyro_z| < 0.08 rad/s) thì đây là spike ảo → giữ nguyên giá trị frame trước.
+                # --- Lớp 1: IMU Camera Spike Rejection ---
+                # Nếu camera nhảy vọt đột ngột (>28px so với frame trước) nhưng gyro nói xe đang thẳng
+                # (|gyro_z| < 0.10 rad/s) thì đây là spike ảo → giữ nguyên giá trị frame trước.
                 is_camera_spike = False
                 if self.prev_lookahead_x is not None:
                     cam_jump = abs(lookahead_x - self.prev_lookahead_x)
-                    imu_is_straight = abs(self.gyro_z) < 0.08
-                    if cam_jump > 40.0 and imu_is_straight:
+                    imu_is_straight = abs(self.gyro_z) < 0.10
+                    if cam_jump > 28.0 and imu_is_straight:
                         is_camera_spike = True
                         self.spike_hold_counter = min(self.spike_hold_counter + 1, 5)
 
                 if is_camera_spike and self.spike_hold_counter <= 4:
-                    # Giữ nguyên lookahead của frame trước để loại nhiễu camera
                     lookahead_x = self.prev_lookahead_x
                     status_text += ' [SPIKE!]'
                 else:
@@ -802,10 +932,7 @@ class Starter(Node):
 
                 # --- IMU Gyro Heading-Hold bù vào sai số ---
                 # Khi xe đi thẳng (|raw_error| <= deadzone * 2): dùng gyro_z để bù giữ thẳng.
-                # gyro_z > 0 = xe đang quay trái → cần bù phải → steer_imu âm.
-                # gyro_z < 0 = xe đang quay phải → cần bù trái → steer_imu dương.
-                # Hệ số k_gyro: chuyển đổi rad/s → rad/s lái. Mạnh vừa để ổn định trên thẳng.
-                k_gyro = 0.25  # Điều chỉnh nếu cần: tăng lên nếu còn lắc, giảm nếu quá giật
+                k_gyro = 0.25
                 steer_imu = -self.gyro_z * k_gyro
 
                 # Vùng chết Deadzone: khi xe ở sát điểm giữa (|raw_error| <= deadzone),
@@ -813,19 +940,25 @@ class Starter(Node):
                 if abs(raw_error) <= self.deadzone:
                     error = 0.0
                     target_steer = 0.0
-                    self.prev_error = 0.0
+                    self.prev_error = None
                     self.d_error_filtered = 0.0
                     # Chỉ dùng IMU bù thẳng trong deadzone (camera quá ổn rồi không cần PD)
                     steer = steer_imu
-                    steer = max(-self.max_steer_step * 3, min(self.max_steer_step * 3, steer))
+                    steer = max(-self.max_steer_step * 2, min(self.max_steer_step * 2, steer))
                     self.last_valid_steer = steer
                 else:
                     error = raw_error - math.copysign(self.deadzone, raw_error)
 
-                    # Lọc vi phân D (Low-pass filtered derivative)
+                    # Lọc vi phân D (Low-pass filtered derivative - Chống sốc giật khi mới Start hoặc khi có nhiễu)
                     dt = 1.0 / self.rate
-                    raw_de = (error - self.prev_error) / dt if dt > 0 else 0.0
-                    self.d_error_filtered = 0.60 * raw_de + 0.40 * self.d_error_filtered
+                    if self.prev_error is None:
+                        raw_de = 0.0
+                        self.d_error_filtered = 0.0
+                    else:
+                        raw_de = (error - self.prev_error) / dt if dt > 0 else 0.0
+                        # Khống chế đạo hàm tức thời tránh giật tay lái đột ngột (derivative kick)
+                        raw_de = max(-90.0, min(90.0, raw_de))
+                        self.d_error_filtered = 0.50 * raw_de + 0.50 * self.d_error_filtered
                     self.prev_error = error
 
                     # 1. Bù lái phản hồi PD (Feedback bám thẳng giữa làn) + IMU gyro
@@ -833,7 +966,7 @@ class Starter(Node):
                     target_steer = steer_pd + steer_imu
 
                     # 2. Bộ lọc mượt tay lái (Slew rate & Exponential Smoothing)
-                    filtered_steer = 0.40 * target_steer + 0.60 * self.last_valid_steer
+                    filtered_steer = 0.45 * target_steer + 0.55 * self.last_valid_steer
                     steer_diff = filtered_steer - self.last_valid_steer
                     if abs(steer_diff) > self.max_steer_step:
                         filtered_steer = self.last_valid_steer + math.copysign(self.max_steer_step, steer_diff)
@@ -841,21 +974,71 @@ class Starter(Node):
                     steer = filtered_steer
                     self.last_valid_steer = steer
 
-                # 4. Điều chỉnh vận tốc thích nghi THÔNG MINH:
-                #    - CHẠY ĐƯỜNG THẲNG: Tự động tăng tốc nhanh dần lên tới straight_speed (0.32 m/s).
-                #    - VÀO CUA: Chủ động hãm phanh giảm tốc về corner_speed (0.11 m/s) để ôm cua an toàn, bám vạch chắc chắn.
+                # --- Lớp 2: THUẬT TOÁN XÁC THỰC CUA THEO THỜI GIAN (TEMPORAL CORNER PERSISTENCE) ---
+                # Lọc mượt độ cong (IIR low-pass) để loại bỏ hoàn toàn các đỉnh nhọn nhiễu 1 frame:
+                self.smooth_curvature = 0.25 * abs(curvature) + 0.75 * self.smooth_curvature
+
                 steer_factor = min(1.0, abs(steer) / 0.38)
-                curv_factor = min(1.0, abs(curvature) * 150.0)
-                err_factor = min(1.0, abs(raw_error) / 55.0)
-                gyro_factor = min(1.0, abs(self.gyro_z) / 0.30)
+                curv_factor = min(1.0, self.smooth_curvature * 120.0)
+                effective_err = max(0.0, abs(raw_error) - self.deadzone)
+                err_factor = min(1.0, effective_err / 45.0)
+                gyro_factor = min(1.0, max(0.0, abs(self.gyro_z) - 0.08) / 0.32)
 
-                # Tổng hợp hệ số uốn cua (0.0 = thẳng tuyệt đối, 1.0 = cua gắt)
-                turn_factor = max(steer_factor, curv_factor, err_factor * 0.70, gyro_factor * 0.75)
+                # Điều kiện ứng viên cua:
+                is_corner_candidate = (
+                    curv_factor >= 0.22 or
+                    steer_factor >= 0.38 or
+                    gyro_factor >= 0.32 or
+                    (err_factor >= 0.60 and abs(self.gyro_z) >= 0.10)
+                )
 
-                # Tính tốc độ mục tiêu theo đường cong phi tuyến:
-                target_speed = self.corner_speed + (self.straight_speed - self.corner_speed) * ((1.0 - turn_factor) ** 2)
+                if is_corner_candidate:
+                    self.corner_candidate_count += 1
+                    self.straight_candidate_count = 0
+                    if self.corner_candidate_count >= self.corner_confirm_frames:
+                        self.is_corner_confirmed = True
+                else:
+                    self.straight_candidate_count += 1
+                    self.corner_candidate_count = max(0, self.corner_candidate_count - 1)
+                    if self.straight_candidate_count >= self.straight_confirm_frames:
+                        self.is_corner_confirmed = False
 
-                # Bộ điều tốc Slew-Rate Limiter (Tăng tốc mượt tránh trượt bánh, phanh nhanh kịp ôm cua):
+                # ĐIỀU KHIỂN TỐC ĐỘ THÍCH NGHI THEO TRẠNG THÁI XÁC THỰC:
+                if not self.is_corner_confirmed:
+                    # Khi CHƯA XÁC NHẬN CUA (Đang chạy thẳng hoặc chỉ có nhiễu thoáng qua 1-3 frame):
+                    # Khóa turn_factor = 0.0 để xe duy trì tốc độ straight_speed, TUYỆT ĐỐI KHÔNG PHANH GIẬT!
+                    turn_factor = 0.0
+                    self.smooth_turn_factor = 0.60 * self.smooth_turn_factor
+                else:
+                    # ĐÃ XÁC NHẬN CUA BỀN VỮNG (Duy trì >= 5 frame ~ 0.25s):
+                    raw_turn = max(steer_factor, curv_factor, err_factor * 0.70, gyro_factor * 0.65)
+                    self.smooth_turn_factor = 0.35 * raw_turn + 0.65 * self.smooth_turn_factor
+                    turn_factor = self.smooth_turn_factor
+
+                if turn_factor <= 0.12:
+                    smooth_turn = 0.0
+                else:
+                    smooth_turn = (turn_factor - 0.12) / 0.88
+
+                # Tính tốc độ mục tiêu theo đường cong thích nghi:
+                target_speed = self.corner_speed + (self.straight_speed - self.corner_speed) * (1.0 - smooth_turn)
+
+                # --- SOFT-START KHỞI HÀNH ÊM ÁI (TRIỆT TIÊU HOÀN TOÀN HIỆN TƯỢNG VỌT XE & GIẬT LÁI KHI MỚI BẤM START) ---
+                launch_elapsed = time.time() - getattr(self, 'start_launch_time', 0.0)
+                if launch_elapsed < 1.0:
+                    launch_ratio = max(0.0, min(1.0, launch_elapsed / 1.0))
+                    # Khống chế trần tốc độ tăng dần từ tốn từ 0.08 m/s lên corner_speed
+                    speed_cap = 0.08 + (self.corner_speed - 0.08) * launch_ratio
+                    target_speed = min(target_speed, speed_cap)
+
+                    # Trong 0.6s đầu, ép xe lăn bánh nhẹ về phía trước lấy đà, khống chế góc lái tránh quăng đuôi
+                    if launch_elapsed < 0.6:
+                        steer_scale = min(1.0, max(0.25, launch_elapsed / 0.6))
+                        steer = steer * steer_scale
+                        steer = max(-0.20, min(0.20, steer))
+                        self.last_valid_steer = steer
+
+                # Bộ điều tốc Slew-Rate Limiter (Tăng tốc mượt tránh trượt bánh, phanh êm ái khi ôm cua):
                 dt = 1.0 / self.rate
                 if target_speed > self.current_speed:
                     acc_step = self.accel_rate * dt
@@ -864,7 +1047,7 @@ class Starter(Node):
                 else:
                     dec_step = self.decel_rate * dt
                     self.current_speed = max(target_speed, self.current_speed - dec_step)
-                    speed_mode = 'CUA: GIAM TOC'
+                    speed_mode = f'CUA: GIAM TOC (xac thuc {self.corner_candidate_count}f)'
 
                 speed = self.current_speed
                 status_text = f'{status_text} [{speed_mode}]'

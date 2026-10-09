@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+if [ -z "$1" ]; then
+  echo "👉 Cách dùng: car-tune <hệ_số_phải> HOẶC car-tune <hệ_số_trái> <hệ_số_phải>"
+  echo "Ví dụ 1: car-tune 4.8         (giữ trái, chỉnh phải = 4.8)"
+  echo "Ví dụ 2: car-tune 0.2 0.2     (chỉnh cả 2 bánh = 0.2)"
+  echo "Thông số hiện tại trong ~/crc_car.env:"
+  grep -E "CRC_FF_GAIN" /home/jetson/crc_car.env
+  exit 1
+fi
+
+if [ -n "$2" ]; then
+  sed -i "s/^CRC_FF_GAIN_LEFT=.*/CRC_FF_GAIN_LEFT=$1/" /home/jetson/crc_car.env
+  sed -i "s/^CRC_FF_GAIN_RIGHT=.*/CRC_FF_GAIN_RIGHT=$2/" /home/jetson/crc_car.env
+  echo "⚙️  Đã cập nhật: Trái=$1 | Phải=$2"
+else
+  sed -i "s/^CRC_FF_GAIN_RIGHT=.*/CRC_FF_GAIN_RIGHT=$1/" /home/jetson/crc_car.env
+  echo "⚙️  Đã cập nhật: Phải=$1"
+fi
+
+echo "🔄 Đang khởi động lại driver động cơ (car bringup)..."
+bash /home/jetson/crc_car/scripts/run_car.sh bringup
+echo "✅ HOÀN TẤT! Driver bánh xe đã nạp hệ số mới:"
+grep -E "CRC_FF_GAIN" /home/jetson/crc_car.env

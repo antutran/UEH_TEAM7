@@ -20,3 +20,10 @@ __pycache__/
 build/
 install/
 log/
+
+# Large media & archive files
+*.mov
+*.mp4
+*.zip
+*.tar
+*.tar.gz
